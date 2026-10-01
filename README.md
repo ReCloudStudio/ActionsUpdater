@@ -60,6 +60,37 @@ go test ./...
 go build ./cmd/actions-updater
 ```
 
+## Nix Installation
+
+Install the latest tagged release directly from the flake:
+
+```console
+nix profile install github:ReCloudStudio/ActionsUpdater
+```
+
+Use it from another flake by adding the input and including the package:
+
+```nix
+{
+  inputs.actions-updater.url = "github:ReCloudStudio/ActionsUpdater";
+
+  outputs = { self, nixpkgs, actions-updater, ... }: {
+    nixosConfigurations.example = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ({ pkgs, ... }: {
+          environment.systemPackages = [
+            actions-updater.packages.x86_64-linux.au
+          ];
+        })
+      ];
+    };
+  };
+}
+```
+
+The package is also available as `actions-updater.packages.<system>.default`.
+
 Build metadata can be injected with:
 
 ```console
