@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -72,8 +73,26 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	fs.Var(&o.only, "only", "仅更新仓库")
 	fs.Var(&o.exclude, "exclude", "排除仓库")
 	showVersion := fs.Bool("version", false, "显示版本")
-	fs.Usage = func() { fmt.Fprintln(errOut, "用法: actions-updater [选项] <文件或目录...>") }
+	fs.Usage = func() {
+		fmt.Fprintln(errOut, "用法:")
+		fmt.Fprintln(errOut, "  actions-updater [选项] <文件或目录...>")
+		fmt.Fprintln(errOut)
+		fmt.Fprintln(errOut, "说明:")
+		fmt.Fprintln(errOut, "  扫描 GitHub Actions workflow，并将静态 action 引用更新到最新标签。")
+		fmt.Fprintln(errOut, "  传入目录时，默认扫描 .github/workflows/ 下的 YAML 文件。")
+		fmt.Fprintln(errOut)
+		fmt.Fprintln(errOut, "选项:")
+		fs.PrintDefaults()
+		fmt.Fprintln(errOut)
+		fmt.Fprintln(errOut, "示例:")
+		fmt.Fprintln(errOut, "  actions-updater .")
+		fmt.Fprintln(errOut, "  actions-updater --dry-run .github/workflows/ci.yml")
+		fmt.Fprintln(errOut, "  actions-updater --same-major --confirm .")
+	}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *showVersion {

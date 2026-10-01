@@ -23,6 +23,18 @@ func TestRunRejectsNoInput(t *testing.T) {
 	}
 }
 
+func TestRunHelpIncludesOptionsAndExamples(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"--help"}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("run() = %d", code)
+	}
+	for _, want := range []string{"-dry-run", "-timeout", "actions-updater --same-major --confirm ."} {
+		if !bytes.Contains(errOut.Bytes(), []byte(want)) {
+			t.Fatalf("help output missing %q: %s", want, errOut.String())
+		}
+	}
+}
+
 func TestRunRejectsInvalidTimeout(t *testing.T) {
 	if code := run([]string{"--timeout", "0s", "x.yml"}, nil, &bytes.Buffer{}, &bytes.Buffer{}); code != 2 {
 		t.Fatalf("run() = %d", code)
