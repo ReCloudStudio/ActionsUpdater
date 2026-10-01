@@ -38,7 +38,7 @@ jobs:
               (cd dist && zip "${name}.zip" "${name}${ext}")
               rm "dist/${name}${ext}"
             else
-              tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+              (cd dist && tar -czf "${name}.tar.gz" "${name}")
               rm "dist/${name}"
             fi
           done
