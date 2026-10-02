@@ -33,10 +33,13 @@ Options:
 - `--recursive`: recursively scan YAML files.
 - `--concurrency N`: maximum concurrent GitHub repository requests (default 4).
 - `--timeout DURATION`: maximum duration for GitHub requests (default `5m`).
+- `--backend gh|http`: query backend for this run, overriding the
+  configuration file (see Configuration).
 - `--version`: print build version information.
 
 Set `GITHUB_TOKEN` to authenticate GitHub API requests and avoid anonymous
-rate limits. The token is never printed.
+rate limits; when unset, the `gh_token` value from the configuration file is
+used. The token is never printed.
 
 Only static line-form `uses:` values are changed. Docker actions, local
 actions, expressions, block scalars, and other ambiguous YAML constructs are
@@ -51,6 +54,27 @@ skipped.
 Exit codes are `0` for success, `1` for processing failures or timeout, `2` for
 invalid arguments or inputs, and `130` if interrupted or if the user rejects
 the confirmation prompt.
+
+## Configuration
+
+The first run creates the configuration file and prints its path (override the
+location with `ACTIONS_UPDATER_CONFIG`; otherwise
+`$XDG_CONFIG_HOME/actions-updater/config.json`, defaulting to
+`~/.config/actions-updater/config.json`):
+
+```json
+{
+  "gh_token": "",
+  "backend": "gh"
+}
+```
+
+- `gh_token`: persistent GitHub token, used when `GITHUB_TOKEN` is not set.
+- `backend`: `gh` queries GitHub through the `gh` CLI (using its own
+  authentication, falling back to `gh_token`), `http` calls the REST API
+  directly. When the file is generated, `backend` is set to `gh` if the `gh`
+  command is available on `PATH`, otherwise `http`. Pass `--backend` to
+  override the stored value for a single run.
 
 ## Development
 

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -44,8 +42,8 @@ type Client struct {
 	Token, Version string
 }
 
-func New(version string) *Client {
-	return &Client{BaseURL: "https://api.github.com", HTTP: http.DefaultClient, Token: os.Getenv("GITHUB_TOKEN"), Version: version}
+func New(version, token string) *Client {
+	return &Client{BaseURL: "https://api.github.com", HTTP: http.DefaultClient, Token: token, Version: version}
 }
 
 func (c *Client) request(ctx context.Context, endpoint string, value any) (http.Header, error) {
@@ -103,65 +101,49 @@ func (c *Client) request(ctx context.Context, endpoint string, value any) (http.
 }
 
 func (c *Client) Tags(ctx context.Context, repo string) ([]Tag, error) {
-	parts := strings.Split(repo, "/")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("无效仓库 %q", repo)
+	return collectTags(ctx, repo, c)
+}
+
+func (c *Client) listTags(ctx context.Context, repo string) ([]tagEntry, error) {
+	escaped, err := escapeRepo(repo)
+	if err != nil {
+		return nil, err
 	}
-	repo = url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])
-	var tags []Tag
+	var all []tagEntry
 	for page := 1; ; page++ {
-		var result []struct {
-			Name   string `json:"name"`
-			Commit struct {
-				SHA  string `json:"sha"`
-				Type string `json:"type"`
-			} `json:"commit"`
-		}
-		header, err := c.request(ctx, fmt.Sprintf("/repos/%s/tags?per_page=100&page=%d", repo, page), &result)
+		var result []tagEntry
+		header, err := c.request(ctx, fmt.Sprintf("/repos/%s/tags?per_page=100&page=%d", escaped, page), &result)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", strings.ToLower(repo), err)
 		}
-		for _, item := range result {
-			tag := Tag{Name: item.Name, Commit: item.Commit}
-			if item.Commit.Type == "tag" {
-				resolved, err := c.resolveAnnotatedTag(ctx, repo, item.Commit.SHA)
-				if err != nil {
-					return nil, fmt.Errorf("%s: %w", strings.ToLower(repo), err)
-				}
-				tag.Commit = resolved.Commit
-				tag.Time = resolved.Time
-			} else {
-				var commit commitResponse
-				if _, err := c.request(ctx, fmt.Sprintf("/repos/%s/git/commits/%s", repo, item.Commit.SHA), &commit); err != nil {
-					return nil, fmt.Errorf("%s: %w", strings.ToLower(repo), err)
-				}
-				tag.Time = commit.Commit.Committer.Date
-			}
-			tags = append(tags, tag)
-		}
+		all = append(all, result...)
 		if !strings.Contains(header.Get("Link"), `rel="next"`) {
 			break
 		}
 	}
-	return tags, nil
+	return all, nil
 }
 
-func (c *Client) resolveAnnotatedTag(ctx context.Context, repo, sha string) (Tag, error) {
-	var annotated tagResponse
-	if _, err := c.request(ctx, fmt.Sprintf("/repos/%s/git/tags/%s", repo, sha), &annotated); err != nil {
-		return Tag{}, err
-	}
-	tag := Tag{Commit: annotated.Object, Time: annotated.Tagger.Date}
-	if annotated.Object.Type != "tag" {
-		return tag, nil
-	}
-	next, err := c.resolveAnnotatedTag(ctx, repo, annotated.Object.SHA)
+func (c *Client) tagObject(ctx context.Context, repo, sha string) (tagResponse, error) {
+	escaped, err := escapeRepo(repo)
 	if err != nil {
-		return Tag{}, err
+		return tagResponse{}, err
 	}
-	if tag.Time.IsZero() {
-		tag.Time = next.Time
+	var result tagResponse
+	if _, err := c.request(ctx, fmt.Sprintf("/repos/%s/git/tags/%s", escaped, sha), &result); err != nil {
+		return tagResponse{}, err
 	}
-	tag.Commit = next.Commit
-	return tag, nil
+	return result, nil
+}
+
+func (c *Client) commitInfo(ctx context.Context, repo, sha string) (commitResponse, error) {
+	escaped, err := escapeRepo(repo)
+	if err != nil {
+		return commitResponse{}, err
+	}
+	var result commitResponse
+	if _, err := c.request(ctx, fmt.Sprintf("/repos/%s/git/commits/%s", escaped, sha), &result); err != nil {
+		return commitResponse{}, err
+	}
+	return result, nil
 }

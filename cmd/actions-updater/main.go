@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ReCloudStudio/ActionsUpdater/internal/config"
 	gh "github.com/ReCloudStudio/ActionsUpdater/internal/github"
 	"github.com/ReCloudStudio/ActionsUpdater/internal/workflow"
 )
@@ -29,6 +30,7 @@ type options struct {
 	concurrency                                             int
 	timeout                                                 time.Duration
 	only, exclude                                           listFlag
+	backend                                                 string
 }
 type listFlag []string
 
@@ -72,6 +74,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	fs.DurationVar(&o.timeout, "timeout", 5*time.Minute, "GitHub 请求总超时")
 	fs.Var(&o.only, "only", "仅更新仓库")
 	fs.Var(&o.exclude, "exclude", "排除仓库")
+	fs.StringVar(&o.backend, "backend", "", "数据后端：gh 或 http（默认取配置文件）")
 	showVersion := fs.Bool("version", false, "显示版本")
 	fs.Usage = func() {
 		fmt.Fprintln(errOut, "用法:")
@@ -80,6 +83,10 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "说明:")
 		fmt.Fprintln(errOut, "  扫描 GitHub Actions workflow，并将静态 action 引用更新到最新标签。")
 		fmt.Fprintln(errOut, "  传入目录时，默认扫描 .github/workflows/ 下的 YAML 文件。")
+		if p := config.Path(); p != "" {
+			fmt.Fprintf(errOut, "  配置文件 %s 会在首次运行时自动生成，\n", p)
+			fmt.Fprintln(errOut, "  可保存 gh_token 与 backend；--backend 覆盖配置文件中的 backend。")
+		}
 		fmt.Fprintln(errOut)
 		fmt.Fprintln(errOut, "选项:")
 		fs.PrintDefaults()
@@ -111,8 +118,29 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "--timeout 必须大于 0")
 		return 2
 	}
+	if o.backend != "" && o.backend != config.BackendGH && o.backend != config.BackendHTTP {
+		fmt.Fprintf(errOut, "--backend 无效值 %q，应为 gh 或 http\n", o.backend)
+		return 2
+	}
 	if fs.NArg() == 0 {
 		fs.Usage()
+		return 2
+	}
+	cfg, created, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 2
+	}
+	if created {
+		fmt.Fprintf(errOut, "已创建配置文件: %s\n", config.Path())
+	}
+	backend := o.backend
+	if backend == "" {
+		backend = cfg.Backend
+	}
+	fetch, err := newFetcher(backend, resolveToken(cfg), version)
+	if err != nil {
+		fmt.Fprintln(errOut, err)
 		return 2
 	}
 	files, e := workflow.Discover(fs.Args(), o.recursive)
@@ -164,7 +192,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 			}
 		}
 	}
-	tags, failures := fetchTags(ctx, byRepo, o, gh.New(version).Tags)
+	tags, failures := fetchTags(ctx, byRepo, o, fetch)
 	if signalCtx.Err() != nil {
 		return 130
 	}
@@ -249,6 +277,21 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		json.NewEncoder(out).Encode(r)
 	}
 	return status(r)
+}
+func resolveToken(cfg *config.Config) string {
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		return token
+	}
+	return cfg.GHToken
+}
+func newFetcher(backend, token, version string) (tagFetcher, error) {
+	if backend == config.BackendGH {
+		if !gh.Available() {
+			return nil, errors.New("backend=gh 需要 gh 命令，请安装 GitHub CLI，或改用 --backend http")
+		}
+		return gh.NewCLI(version, token).Tags, nil
+	}
+	return gh.New(version, token).Tags, nil
 }
 func fetchTags(ctx context.Context, repos map[string]struct{}, o options, fetch tagFetcher) (map[string][]gh.Tag, map[string]error) {
 	result := map[string][]gh.Tag{}
