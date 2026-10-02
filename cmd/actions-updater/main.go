@@ -16,9 +16,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/muesli/termenv"
+
 	"github.com/ReCloudStudio/ActionsUpdater/internal/config"
 	gh "github.com/ReCloudStudio/ActionsUpdater/internal/github"
 	"github.com/ReCloudStudio/ActionsUpdater/internal/workflow"
+)
+
+const (
+	colorGreen  = "#22c55e"
+	colorRed    = "#ef4444"
+	colorYellow = "#facc15"
+	colorCyan   = "#06b6d4"
 )
 
 var version = "dev"
@@ -61,6 +70,8 @@ type tagFetcher func(context.Context, string) ([]gh.Tag, error)
 
 func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 func run(args []string, in io.Reader, out, errOut io.Writer) int {
+	outO := termenv.NewOutput(out)
+	errO := termenv.NewOutput(errOut)
 	fs := flag.NewFlagSet("actions-updater", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	var o options
@@ -70,7 +81,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	fs.BoolVar(&o.sameMajor, "same-major", false, "限制同一主版本")
 	fs.BoolVar(&o.prerelease, "include-prerelease", false, "包含预发布标签")
 	fs.BoolVar(&o.recursive, "recursive", false, "递归扫描目录")
-	fs.IntVar(&o.concurrency, "concurrency", 4, "并发仓库查询数")
+	fs.IntVar(&o.concurrency, "concurrency", 8, "并发仓库查询数")
 	fs.DurationVar(&o.timeout, "timeout", 5*time.Minute, "GitHub 请求总超时")
 	fs.Var(&o.only, "only", "仅更新仓库")
 	fs.Var(&o.exclude, "exclude", "排除仓库")
@@ -107,19 +118,19 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		return 0
 	}
 	if o.confirm && o.dryRun {
-		fmt.Fprintln(errOut, "--confirm 与 --dry-run 不能同时使用")
+		fmt.Fprintln(errOut, fg(errO, colorYellow, "--confirm 与 --dry-run 不能同时使用"))
 		return 2
 	}
 	if o.concurrency <= 0 {
-		fmt.Fprintln(errOut, "--concurrency 必须大于 0")
+		fmt.Fprintln(errOut, fg(errO, colorYellow, "--concurrency 必须大于 0"))
 		return 2
 	}
 	if o.timeout <= 0 {
-		fmt.Fprintln(errOut, "--timeout 必须大于 0")
+		fmt.Fprintln(errOut, fg(errO, colorYellow, "--timeout 必须大于 0"))
 		return 2
 	}
 	if o.backend != "" && o.backend != config.BackendGH && o.backend != config.BackendHTTP {
-		fmt.Fprintf(errOut, "--backend 无效值 %q，应为 gh 或 http\n", o.backend)
+		fmt.Fprintln(errOut, fg(errO, colorYellow, fmt.Sprintf("--backend 无效值 %q，应为 gh 或 http", o.backend)))
 		return 2
 	}
 	if fs.NArg() == 0 {
@@ -128,11 +139,11 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	}
 	cfg, created, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(errOut, err)
+		fmt.Fprintln(errOut, fg(errO, colorRed, err.Error()))
 		return 2
 	}
 	if created {
-		fmt.Fprintf(errOut, "已创建配置文件: %s\n", config.Path())
+		fmt.Fprintln(errOut, fg(errO, colorCyan, fmt.Sprintf("已创建配置文件: %s", config.Path())))
 	}
 	backend := o.backend
 	if backend == "" {
@@ -140,12 +151,12 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	}
 	fetch, err := newFetcher(backend, resolveToken(cfg), version)
 	if err != nil {
-		fmt.Fprintln(errOut, err)
+		fmt.Fprintln(errOut, fg(errO, colorYellow, err.Error()))
 		return 2
 	}
 	files, e := workflow.Discover(fs.Args(), o.recursive)
 	if e != nil {
-		fmt.Fprintln(errOut, e)
+		fmt.Fprintln(errOut, fg(errO, colorRed, e.Error()))
 		return 2
 	}
 	if len(files) == 0 {
@@ -162,7 +173,16 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	byRepo := map[string]struct{}{}
 	parsed := map[string][]workflow.Use{}
 	source := map[string][]byte{}
-	for _, file := range files {
+	var prog *progress
+	if !o.json && writerTTY(errOut) {
+		prog = &progress{w: errOut, o: errO, total: len(files), label: "解析中"}
+	}
+	actionCount := 0
+	for i, file := range files {
+		if prog != nil {
+			prog.detail = fmt.Sprintf("actions %d", actionCount)
+		}
+		prog.render(i)
 		if target, linked := workflow.IsSymlink(file); linked {
 			r.Skipped = append(r.Skipped, fmt.Sprintf("%s: 符号链接 -> %s（将更新目标文件）", file, target))
 		}
@@ -182,6 +202,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		}
 		source[file] = data
 		parsed[file] = uses
+		actionCount += len(uses)
 		for _, u := range uses {
 			if u.Skip != "" {
 				r.Skipped = append(r.Skipped, fmt.Sprintf("%s:%d: %s", file, u.Line, u.Skip))
@@ -192,12 +213,22 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 			}
 		}
 	}
-	tags, failures := fetchTags(ctx, byRepo, o, fetch)
+	prog.finish()
+	var fetchFn tagFetcher = fetch
+	prog = nil
+	if !o.json && len(byRepo) > 0 && writerTTY(errOut) {
+		prog = &progress{w: errOut, o: errO, total: len(byRepo), label: "查询中",
+			detail: fmt.Sprintf("actions %d", actionCount)}
+		prog.render(0)
+		fetchFn = wrapProgress(fetch, prog)
+	}
+	tags, failures := fetchTags(ctx, byRepo, o, fetchFn)
+	prog.finish()
 	if signalCtx.Err() != nil {
 		return 130
 	}
 	if ctx.Err() != nil {
-		fmt.Fprintf(errOut, "处理超时: %v\n", ctx.Err())
+		fmt.Fprintln(errOut, fg(errO, colorYellow, fmt.Sprintf("处理超时: %v", ctx.Err())))
 		return 1
 	}
 	for repo, e := range failures {
@@ -233,7 +264,11 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		return r.Updates[i].File < r.Updates[j].File
 	})
 	if !o.json {
-		printReport(out, r)
+		printReport(outO, r)
+		fmt.Fprintf(out, "共更新 %s 处，跳过 %s 处，错误 %s 处\n",
+			fg(outO, colorGreen, fmt.Sprintf("%d", len(r.Updates))),
+			faint(outO, fmt.Sprintf("%d", len(r.Skipped))),
+			fg(outO, colorRed, fmt.Sprintf("%d", len(r.Errors))))
 	}
 	if len(r.Updates) == 0 {
 		if o.json {
@@ -252,7 +287,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	}
 	if !o.confirm {
 		if !isTTY() {
-			fmt.Fprintln(errOut, "非交互终端必须传入 --confirm 才能写入")
+			fmt.Fprintln(errOut, fg(errO, colorYellow, "非交互终端必须传入 --confirm 才能写入"))
 			return 2
 		}
 		fmt.Fprint(out, "写入这些更新？[Y/n] ")
@@ -349,15 +384,76 @@ func replaceRef(raw, old, new string) string {
 	}
 	return prefix + quote + strings.TrimSuffix(trim, old) + new + quote + suffix
 }
-func printReport(w io.Writer, r report) {
+func printReport(o *termenv.Output, r report) {
 	for _, u := range r.Updates {
-		fmt.Fprintf(w, "%s:%d: %s@%s -> %s\n", u.File, u.Line, u.Action, u.Old, u.New)
+		fmt.Fprintf(o, "%s:%d: %s@%s -> %s\n", u.File, u.Line, u.Action, u.Old, fg(o, colorGreen, u.New))
 	}
 	for _, s := range r.Skipped {
-		fmt.Fprintln(w, "跳过:", s)
+		fmt.Fprintln(o, faint(o, "跳过: "+s))
 	}
 	for _, e := range r.Errors {
-		fmt.Fprintln(w, "错误:", e)
+		fmt.Fprintln(o, fg(o, colorRed, "错误: "+e))
+	}
+}
+func fg(o *termenv.Output, hex, s string) string {
+	if o.Profile == termenv.Ascii {
+		return s
+	}
+	c := o.Color(hex)
+	if c == nil {
+		return s
+	}
+	return o.String(s).Foreground(c).String()
+}
+func faint(o *termenv.Output, s string) string {
+	if o.Profile == termenv.Ascii {
+		return s
+	}
+	return o.String(s).Faint().String()
+}
+
+type progress struct {
+	w      io.Writer
+	o      *termenv.Output
+	total  int
+	label  string
+	detail string
+}
+
+func (p *progress) render(done int) {
+	if p == nil {
+		return
+	}
+	fmt.Fprintf(p.w, "\r\x1b[K%s %d/%d", p.label, done, p.total)
+	if p.detail != "" {
+		fmt.Fprintf(p.w, " · %s", p.detail)
+	}
+}
+func (p *progress) fail(repo string, err error) {
+	if p == nil {
+		return
+	}
+	fmt.Fprintf(p.w, "\r\x1b[K%s\n", fg(p.o, colorRed, fmt.Sprintf("错误: %s: %v", repo, err)))
+}
+func (p *progress) finish() {
+	if p == nil {
+		return
+	}
+	fmt.Fprint(p.w, "\r\x1b[K")
+}
+func wrapProgress(next tagFetcher, p *progress) tagFetcher {
+	var mu sync.Mutex
+	done := 0
+	return func(ctx context.Context, repo string) ([]gh.Tag, error) {
+		tags, e := next(ctx, repo)
+		mu.Lock()
+		defer mu.Unlock()
+		done++
+		if e != nil {
+			p.fail(repo, e)
+		}
+		p.render(done)
+		return tags, e
 	}
 }
 func status(r report) int {
@@ -366,7 +462,12 @@ func status(r report) int {
 	}
 	return 0
 }
-func isTTY() bool {
-	info, e := os.Stdout.Stat()
+func isTTY() bool { return writerTTY(os.Stdout) }
+func writerTTY(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, e := f.Stat()
 	return e == nil && (info.Mode()&os.ModeCharDevice) != 0
 }

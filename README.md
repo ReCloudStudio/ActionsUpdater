@@ -31,7 +31,7 @@ Options:
 - `--only owner/repo` and `--exclude owner/repo`: repeatable action filters;
   exclusion takes priority.
 - `--recursive`: recursively scan YAML files.
-- `--concurrency N`: maximum concurrent GitHub repository requests (default 4).
+- `--concurrency N`: maximum concurrent GitHub repository requests (default 8).
 - `--timeout DURATION`: maximum duration for GitHub requests (default `5m`).
 - `--backend gh|http`: query backend for this run, overriding the
   configuration file (see Configuration).

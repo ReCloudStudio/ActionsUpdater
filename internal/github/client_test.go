@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestTagsPaginatesAndResolvesTimes(t *testing.T) {
+func TestTagsPaginatesAndSkipsTimeLookupForSemver(t *testing.T) {
 	requests := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
@@ -24,6 +24,36 @@ func TestTagsPaginatesAndResolvesTimes(t *testing.T) {
 			} else {
 				w.Write([]byte(`[{"name":"v2","commit":{"sha":"def","type":"tag"}}]`))
 			}
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer server.Close()
+	c := &Client{BaseURL: server.URL, HTTP: server.Client(), Version: "test"}
+	tags, err := c.Tags(context.Background(), "owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 2 || !tags[0].Time.IsZero() || !tags[1].Time.IsZero() ||
+		tags[0].Commit.SHA != "abc" || tags[1].Commit.SHA != "def" {
+		t.Fatalf("unexpected tags: %#v", tags)
+	}
+	if !strings.Contains(strings.Join(requests, "\n"), "page=2") {
+		t.Fatalf("did not paginate: %v", requests)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %v, want only tag list pages", requests)
+	}
+}
+
+func TestTagsResolvesTimesForNonSemver(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") != "application/vnd.github+json" || r.Header.Get("X-GitHub-Api-Version") == "" {
+			t.Error("missing GitHub API headers")
+		}
+		switch r.URL.Path {
+		case "/repos/owner/repo/tags":
+			w.Write([]byte(`[{"name":"latest","commit":{"sha":"abc","type":"commit"}},{"name":"nightly","commit":{"sha":"def","type":"tag"}}]`))
 		case "/repos/owner/repo/git/commits/abc":
 			w.Write([]byte(`{"commit":{"committer":{"date":"2024-01-01T00:00:00Z"}}}`))
 		case "/repos/owner/repo/git/tags/def":
@@ -38,11 +68,8 @@ func TestTagsPaginatesAndResolvesTimes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tags) != 2 || tags[1].Time.IsZero() || tags[1].Commit.SHA != "ghi" {
+	if len(tags) != 2 || tags[0].Time.IsZero() || tags[1].Time.IsZero() || tags[1].Commit.SHA != "ghi" {
 		t.Fatalf("unexpected tags: %#v", tags)
-	}
-	if !strings.Contains(strings.Join(requests, "\n"), "page=2") {
-		t.Fatalf("did not paginate: %v", requests)
 	}
 }
 

@@ -18,10 +18,10 @@
       packages = forAllSystems (system: {
         default = nixpkgs.legacyPackages.${system}.buildGoModule {
           pname = "actions-updater";
-          version = "1.0.1";
+          version = "1.1.0";
           src = ./.;
           subPackages = [ "cmd/actions-updater" ];
-          vendorHash = "sha256-s79+Pf1KmxsiuafK07bwHVqz98D5TYfpp1RAGWySbxw=";
+          vendorHash = "sha256-R/NtN9C8MdpUkJx20PBxWAN3elxQeTqSaj5oXCAWEd4=";
 
           meta = {
             description = "Update GitHub Actions references to their newest tags";

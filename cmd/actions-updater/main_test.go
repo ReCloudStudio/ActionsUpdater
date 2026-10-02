@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/muesli/termenv"
 
 	"github.com/ReCloudStudio/ActionsUpdater/internal/config"
 	gh "github.com/ReCloudStudio/ActionsUpdater/internal/github"
@@ -206,5 +209,91 @@ func TestResolveTokenPrefersEnv(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	if got := resolveToken(cfg); got != "from-config" {
 		t.Fatalf("resolveToken() = %q", got)
+	}
+}
+
+func TestRunPrintsSummary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ci.yml")
+	if err := os.WriteFile(path, []byte("uses: actions/checkout@v4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"--dry-run", "--only", "foo/bar", path}, bytes.NewBuffer(nil), &out, &errOut); code != 0 {
+		t.Fatalf("run() = %d: %s", code, errOut.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte("共更新 0 处，跳过 0 处，错误 0 处")) {
+		t.Fatalf("out = %q", out.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"--json", "--only", "foo/bar", path}, bytes.NewBuffer(nil), &out, &errOut); code != 0 {
+		t.Fatalf("run() = %d: %s", code, errOut.String())
+	}
+	var r report
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatalf("json output not clean: %v: %q", err, out.String())
+	}
+}
+
+func TestRunColorsOutputWhenForced(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "1")
+	path := filepath.Join(t.TempDir(), "ci.yml")
+	if err := os.WriteFile(path, []byte("uses: actions/checkout@v4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := run([]string{"--dry-run", "--only", "foo/bar", path}, bytes.NewBuffer(nil), &out, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("run() = %d", code)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("\x1b[")) {
+		t.Fatalf("expected escapes, out = %q", out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte("共更新")) {
+		t.Fatalf("out = %q", out.String())
+	}
+}
+
+func TestProgressLines(t *testing.T) {
+	var buf bytes.Buffer
+	p := &progress{w: &buf, o: termenv.NewOutput(&buf), total: 2, label: "查询中", detail: "actions 10"}
+	wrapped := wrapProgress(func(_ context.Context, repo string) ([]gh.Tag, error) {
+		if repo == "owner/bad" {
+			return nil, errors.New("boom")
+		}
+		return nil, nil
+	}, p)
+	if _, err := wrapped(context.Background(), "owner/good"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrapped(context.Background(), "owner/bad"); err == nil {
+		t.Fatal("expected error")
+	}
+	p.finish()
+	for _, want := range []string{"查询中 1/2 · actions 10", "错误: owner/bad: boom", "查询中 2/2 · actions 10"} {
+		if !bytes.Contains(buf.Bytes(), []byte(want)) {
+			t.Fatalf("progress missing %q: %q", want, buf.String())
+		}
+	}
+}
+
+func TestProgressParsePhase(t *testing.T) {
+	var buf bytes.Buffer
+	p := &progress{w: &buf, o: termenv.NewOutput(&buf), total: 8, label: "解析中", detail: "actions 12"}
+	p.render(3)
+	p.finish()
+	for _, want := range []string{"解析中 3/8 · actions 12", "\r\x1b[K"} {
+		if !bytes.Contains(buf.Bytes(), []byte(want)) {
+			t.Fatalf("progress missing %q: %q", want, buf.String())
+		}
+	}
+}
+
+func TestWriterTTY(t *testing.T) {
+	if writerTTY(&bytes.Buffer{}) {
+		t.Fatal("buffer must not be tty")
+	}
+	if writerTTY(nil) {
+		t.Fatal("nil must not be tty")
 	}
 }

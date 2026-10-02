@@ -26,8 +26,14 @@ func collectTags(ctx context.Context, repo string, api tagAPI) ([]Tag, error) {
 	if err != nil {
 		return nil, err
 	}
-	lower := strings.ToLower(repo)
 	tags := make([]Tag, 0, len(entries))
+	if anySemver(entries) {
+		for _, entry := range entries {
+			tags = append(tags, Tag{Name: entry.Name, Commit: entry.Commit})
+		}
+		return tags, nil
+	}
+	lower := strings.ToLower(repo)
 	for _, entry := range entries {
 		tag := Tag{Name: entry.Name, Commit: entry.Commit}
 		if entry.Commit.Type == "tag" {
@@ -47,6 +53,15 @@ func collectTags(ctx context.Context, repo string, api tagAPI) ([]Tag, error) {
 		tags = append(tags, tag)
 	}
 	return tags, nil
+}
+
+func anySemver(entries []tagEntry) bool {
+	for _, entry := range entries {
+		if _, ok := ParseVersion(entry.Name); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveAnnotatedTag(ctx context.Context, api tagAPI, repo, sha string) (Tag, error) {

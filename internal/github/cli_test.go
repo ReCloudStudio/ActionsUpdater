@@ -8,6 +8,36 @@ import (
 	"testing"
 )
 
+func TestCLITagsSkipsTimeLookupForSemver(t *testing.T) {
+	var calls []string
+	c := &CLI{}
+	c.Run = func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		joined := strings.Join(args, " ")
+		if slices.Contains(args, "--slurp") {
+			if !slices.Contains(args, "repos/owner/repo/tags") || !slices.Contains(args, "--paginate") {
+				t.Errorf("listTags args = %q", joined)
+			}
+			return []byte(`[[{"name":"v1","commit":{"sha":"aaa","type":"commit"}}],[{"name":"v2","commit":{"sha":"bbb","type":"tag"}}]]`), nil
+		}
+		return nil, errors.New("unexpected gh call: " + joined)
+	}
+	tags, err := c.Tags(context.Background(), "owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 2 {
+		t.Fatalf("len(tags) = %d", len(tags))
+	}
+	if !tags[0].Time.IsZero() || !tags[1].Time.IsZero() ||
+		tags[0].Commit.SHA != "aaa" || tags[1].Commit.SHA != "bbb" {
+		t.Fatalf("tags = %#v", tags)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
 func TestCLITagsResolvesAnnotatedAndCommitTimes(t *testing.T) {
 	var calls []string
 	c := &CLI{}
@@ -19,7 +49,7 @@ func TestCLITagsResolvesAnnotatedAndCommitTimes(t *testing.T) {
 			if !slices.Contains(args, "repos/owner/repo/tags") || !slices.Contains(args, "--paginate") {
 				t.Errorf("listTags args = %q", joined)
 			}
-			return []byte(`[[{"name":"v1","commit":{"sha":"aaa","type":"commit"}}],[{"name":"v2","commit":{"sha":"bbb","type":"tag"}}]]`), nil
+			return []byte(`[[{"name":"latest","commit":{"sha":"aaa","type":"commit"}}],[{"name":"nightly","commit":{"sha":"bbb","type":"tag"}}]]`), nil
 		case slices.Contains(args, "repos/owner/repo/git/commits/aaa"):
 			return []byte(`{"commit":{"committer":{"date":"2024-01-01T00:00:00Z"}}}`), nil
 		case slices.Contains(args, "repos/owner/repo/git/tags/bbb"):
