@@ -18,7 +18,7 @@
       packages = forAllSystems (system: {
         default = nixpkgs.legacyPackages.${system}.buildGoModule {
           pname = "actions-updater";
-          version = "1.1.0";
+          version = "1.2.0";
           src = ./.;
           subPackages = [ "cmd/actions-updater" ];
           vendorHash = "sha256-R/NtN9C8MdpUkJx20PBxWAN3elxQeTqSaj5oXCAWEd4=";
